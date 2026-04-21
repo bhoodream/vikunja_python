@@ -1,5 +1,6 @@
 import click
 import requests
+import questionary
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -63,7 +64,8 @@ def is_overdue(due_date_str: str) -> bool:
 @click.command()
 @click.option('--url', envvar='VIKUNJA_URL', required=True, help='URL of the Vikunja instance (e.g., https://vikunja.example.com)')
 @click.option('--token', envvar='VIKUNJA_TOKEN', required=True, help='API Token for authentication')
-def main(url: str, token: str):
+@click.option('--project', 'project_identifier', envvar='VIKUNJA_PROJECT', help='Project ID or Title to filter by')
+def main(url: str, token: str, project_identifier: str = None):
     """Vikunja CLI Task Viewer"""
     client = VikunjaClient(url, token)
     
@@ -74,18 +76,59 @@ def main(url: str, token: str):
         console.print("[yellow]No projects found.[/yellow]")
         return
 
+    selected_projects = []
+    if project_identifier:
+        if project_identifier.lower() == 'all':
+            selected_projects = projects
+        else:
+            # Try to find by ID or Title
+            for p in projects:
+                if str(p['id']) == project_identifier or p['title'].lower() == project_identifier.lower():
+                    selected_projects = [p]
+                    break
+            
+            if not selected_projects:
+                console.print(f"[red]Project '{project_identifier}' not found.[/red]")
+    
+    if not selected_projects:
+        # Interactive selection using questionary (arrow keys)
+        choices = [
+            questionary.Choice(title="[All Projects]", value="all")
+        ] + [
+            questionary.Choice(title=f"{p['title']} (ID: {p['id']})", value=p)
+            for p in projects
+        ]
+        
+        choice = questionary.select(
+            "Select a project:",
+            choices=choices
+        ).ask()
+        
+        if not choice:
+            console.print("[yellow]Selection cancelled.[/yellow]")
+            return
+            
+        if choice == "all":
+            selected_projects = projects
+        else:
+            selected_projects = [choice]
+
     # Map projects by ID
-    project_map = {p['id']: p['title'] for p in projects}
+    project_map = {p['id']: p['title'] for p in selected_projects}
     
     # Group tasks by project
     tasks_by_project = {}
     
-    # Fetch tasks per project
-    with console.status("[bold green]Fetching tasks per project..."):
-        for project in projects:
+    # Fetch tasks for the selected projects
+    with console.status(f"[bold green]Fetching tasks for {len(selected_projects)} project(s)..."):
+        for project in selected_projects:
             project_tasks = client.get_project_tasks(project['id'])
             if project_tasks:
                 tasks_by_project[project['id']] = project_tasks
+
+    if not tasks_by_project:
+        console.print("[yellow]No tasks found in the selected project(s).[/yellow]")
+        return
 
     # Display tasks
     for project_id, project_tasks in tasks_by_project.items():
